@@ -1,5 +1,5 @@
-// В первой лабе в примере страница помирала из-за 500 тысяч тестов. Очевидно, что так задумано не было, а эти же 500 тысяч тестов и проверяются в алгоритме. Они сохранены в tests.txt
-// Более короткий вариант представлен в tests_short.txt. Отдельно здесь лежит run_tests.cpp для прогона тестов main.exe с выводом результата в новый файл.
+// В первой лабе в примере страница помирала из-за 500 тысяч примеров ввода. Очевидно, что так задумано не было, а эти же 500 тысяч тестов и проверяются в алгоритме. Они сохранены в tests.txt
+// Более короткий вариант представлен в tests_short.txt. Отдельно здесь лежит run_tests.cpp для прогона тестов main.exe с бенчмарком и записью в файл.
 
 #include <cstddef>
 #include <cstdint>
@@ -7,18 +7,52 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
+
+struct Node;
+
+struct Link {
+    std::shared_ptr<Node> child;
+    std::weak_ptr<Node> back;
+
+    std::shared_ptr<Node> target() const {
+        if (child) {
+            return child;
+        }
+        return back.lock();
+    }
+};
 
 struct Node {
-    std::string part;
-    bool isWord = false;
-    std::uint64_t value = 0;
-    std::vector<Node> children;
+    std::string word;
+    std::uint64_t value;
+    int bit;
+    Link next[2];
+
+    Node(const std::string& key, std::uint64_t number, int bitIndex)
+        : word(key), value(number), bit(bitIndex) {}
 };
+
+struct SearchPath {
+    std::shared_ptr<Node> parent;
+    std::shared_ptr<Node> branch;
+    std::shared_ptr<Node> found;
+};
+
+void setLink(Node& node, int side, const std::shared_ptr<Node>& target) {
+    Link& link = node.next[side];
+    if (target->bit > node.bit) {
+        link.child = target;
+        link.back.reset();
+    } else {
+        link.back = target;
+        link.child.reset();
+    }
+}
 
 bool parseNumber(const std::string& text, std::uint64_t& value) {
     if (text.empty()) {
@@ -39,110 +73,106 @@ bool parseNumber(const std::string& text, std::uint64_t& value) {
     return true;
 }
 
-std::size_t commonPrefix(const std::string& part, const std::string& word, std::size_t position) {
-    std::size_t length = 0;
-    while (length < part.size() && position + length < word.size() &&
-           part[length] == word[position + length]) {
-        length++;
+int getBit(const std::string& word, int bit) {
+    if (bit == 0) {
+        return 0;
     }
-    return length;
+    int index = (bit - 1) / 8;
+    if (index >= static_cast<int>(word.size())) {
+        return 0;
+    }
+    int shift = 7 - (bit - 1) % 8;
+    return (static_cast<unsigned char>(word[index]) >> shift) & 1;
 }
 
-bool findWord(const Node& node, const std::string& word, std::size_t position, std::uint64_t& value) {
-    if (position == word.size()) {
-        value = node.value;
-        return node.isWord;
+int firstDifferentBit(const std::string& a, const std::string& b) {
+    std::size_t i = 0;
+    while (i < a.size() && i < b.size() && a[i] == b[i]) {
+        ++i;
     }
-
-    for (const Node& child : node.children) {
-        if (word[position] == child.part[0] &&
-            word.compare(position, child.part.size(), child.part) == 0) {
-            return findWord(child, word, position + child.part.size(), value);
-        }
+    int bit = static_cast<int>(i) * 8 + 1;
+    while (getBit(a, bit) == getBit(b, bit)) {
+        ++bit;
     }
-    return false;
+    return bit;
 }
 
-bool addWord(Node& node, const std::string& word, std::size_t position, std::uint64_t value) {
-    if (position == word.size()) {
-        if (node.isWord) {
-            return false;
-        }
-        node.isWord = true;
-        node.value = value;
-        return true;
+SearchPath searchPath(const std::shared_ptr<Node>& header, const std::string& word) {
+    SearchPath path = {header, header, header->next[0].target()};
+    while (path.found->bit > path.branch->bit) {
+        path.parent = std::move(path.branch);
+        path.branch = std::move(path.found);
+        int side = getBit(word, path.branch->bit);
+        path.found = path.branch->next[side].target();
     }
+    return path;
+}
 
-    for (Node& child : node.children) {
-        std::size_t common = commonPrefix(child.part, word, position);
-        if (common == 0) {
-            continue;
-        }
-        if (common == child.part.size()) {
-            return addWord(child, word, position + common, value);
-        }
-
-        Node middle;
-        middle.part = child.part.substr(0, common);
-
-        Node oldBranch;
-        oldBranch.part = child.part.substr(common);
-        oldBranch.isWord = child.isWord;
-        oldBranch.value = child.value;
-        middle.children.push_back(std::move(oldBranch));
-
-        addWord(middle, word, position + common, value);
-        middle.children[0].children.swap(child.children);
-        child = std::move(middle);
-        return true;
+bool findWord(const std::shared_ptr<Node>& header, const std::string& word, std::uint64_t& value) {
+    if (header == nullptr) {
+        return false;
     }
-
-    Node leaf;
-    leaf.part = word.substr(position);
-    leaf.isWord = true;
-    leaf.value = value;
-    node.children.push_back(std::move(leaf));
+    std::shared_ptr<Node> found = searchPath(header, word).found;
+    if (found->word != word) {
+        return false;
+    }
+    value = found->value;
     return true;
 }
 
-void mergeWithChild(Node& node, std::size_t index) {
-    Node& child = node.children[index];
-    Node merged;
-    merged.part = node.part + child.part;
-    merged.isWord = child.isWord;
-    merged.value = child.value;
-    merged.children.swap(child.children);
-    node = std::move(merged);
-}
-
-bool eraseWord(Node& node, const std::string& word, std::size_t position) {
-    for (std::size_t i = 0; i < node.children.size(); i++) {
-        Node& child = node.children[i];
-        if (word[position] != child.part[0] ||
-            word.compare(position, child.part.size(), child.part) != 0) {
-            continue;
-        }
-
-        std::size_t next = position + child.part.size();
-        if (next < word.size()) {
-            return eraseWord(child, word, next);
-        }
-        if (!child.isWord) {
-            return false;
-        }
-
-        if (child.children.size() == 1) {
-            mergeWithChild(child, 0);
-        } else if (!child.children.empty()) {
-            child.isWord = false;
-        } else if (!node.part.empty() && !node.isWord && node.children.size() == 2) {
-            mergeWithChild(node, 1 - i);
-        } else {
-            node.children.erase(node.children.begin() + i);
-        }
+bool addWord(std::shared_ptr<Node>& header, const std::string& word, std::uint64_t value) {
+    if (header == nullptr) {
+        header = std::make_shared<Node>(word, value, 0);
+        setLink(*header, 0, header);
         return true;
     }
-    return false;
+    std::shared_ptr<Node> found = searchPath(header, word).found;
+    if (found->word == word) {
+        return false;
+    }
+    int bit = firstDifferentBit(word, found->word);
+    std::shared_ptr<Node> parent = header;
+    int side = 0;
+    std::shared_ptr<Node> child = parent->next[side].target();
+    while (child->bit > parent->bit && child->bit < bit) {
+        parent = child;
+        side = getBit(word, parent->bit);
+        child = parent->next[side].target();
+    }
+    std::shared_ptr<Node> added = std::make_shared<Node>(word, value, bit);
+    int ownSide = getBit(word, bit);
+    setLink(*added, ownSide, added);
+    setLink(*added, 1 - ownSide, child);
+    setLink(*parent, side, added);
+    return true;
+}
+
+bool eraseWord(std::shared_ptr<Node>& header, const std::string& word) {
+    if (header == nullptr) {
+        return false;
+    }
+    SearchPath path = searchPath(header, word);
+    const std::shared_ptr<Node>& x = path.found;
+    const std::shared_ptr<Node>& q = path.branch;
+    if (x->word != word) {
+        return false;
+    }
+    if (!header->next[0].child) {
+        header.reset();
+        return true;
+    }
+
+    int toX = getBit(word, q->bit);
+    int toQ = getBit(word, path.parent->bit);
+    if (q != x) {
+        std::shared_ptr<Node> source = searchPath(header, q->word).branch;
+        int side = getBit(q->word, source->bit);
+        setLink(*source, side, x);
+        x->word.swap(q->word);
+        x->value = q->value;
+    }
+    setLink(*path.parent, toQ, q->next[1 - toX].target());
+    return true;
 }
 
 bool normalizeWord(std::string& word) {
@@ -160,55 +190,42 @@ bool normalizeWord(std::string& word) {
     return true;
 }
 
-std::uint64_t countWords(const Node& node) {
-    std::uint64_t count = 0;
-    if (node.isWord) {
-        count = 1;
+std::uint64_t saveEntries(const std::shared_ptr<Node>& node, std::ofstream& output) {
+    if (node == nullptr) {
+        return 0;
     }
-    for (const Node& child : node.children) {
-        count += countWords(child);
+    std::uint16_t length = static_cast<std::uint16_t>(node->word.size());
+    output.write(reinterpret_cast<const char*>(&length), sizeof(length));
+    output.write(node->word.data(), length);
+    output.write(reinterpret_cast<const char*>(&node->value), sizeof(node->value));
+    if (!output) {
+        throw std::runtime_error("Error writing file");
+    }
+
+    std::uint64_t count = 1;
+    for (int side = 0; side < 2; side++) {
+        count += saveEntries(node->next[side].child, output);
     }
     return count;
 }
 
-void saveEntries(const Node& node, std::string& word, std::ofstream& output) {
-    std::size_t oldLength = word.size();
-    word += node.part;
-
-    if (node.isWord) {
-        std::uint16_t length = static_cast<std::uint16_t>(word.size());
-        output.write(reinterpret_cast<const char*>(&length), sizeof(length));
-        output.write(word.data(), length);
-        output.write(reinterpret_cast<const char*>(&node.value), sizeof(node.value));
-        if (!output) {
-            throw std::runtime_error("Error writing file");
-        }
-    }
-
-    for (const Node& child : node.children) {
-        saveEntries(child, word, output);
-    }
-    word.resize(oldLength);
-}
-
-void saveDictionary(const Node& root, const std::string& path) {
+void saveDictionary(const std::shared_ptr<Node>& header, const std::string& path) {
     std::ofstream output(path, std::ios::binary);
     if (!output) {
         throw std::runtime_error("Cannot open file for writing");
     }
-
-    std::uint64_t count = countWords(root);
+    std::uint64_t count = 0;
     output.write(reinterpret_cast<const char*>(&count), sizeof(count));
-    std::string word;
-    saveEntries(root, word, output);
+    count = saveEntries(header, output);
+    output.seekp(0);
+    output.write(reinterpret_cast<const char*>(&count), sizeof(count));
     output.close();
-
     if (!output) {
         throw std::runtime_error("Error writing file");
     }
 }
 
-void loadDictionary(Node& root, const std::string& path) {
+void loadDictionary(std::shared_ptr<Node>& root, const std::string& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("Cannot open file for reading");
@@ -219,7 +236,7 @@ void loadDictionary(Node& root, const std::string& path) {
         throw std::runtime_error("Invalid dictionary file");
     }
 
-    Node loaded;
+    std::shared_ptr<Node> loaded;
     for (std::uint64_t i = 0; i < count; i++) {
         std::uint16_t length = 0;
         input.read(reinterpret_cast<char*>(&length), sizeof(length));
@@ -231,7 +248,7 @@ void loadDictionary(Node& root, const std::string& path) {
         std::uint64_t value = 0;
         input.read(&word[0], length);
         input.read(reinterpret_cast<char*>(&value), sizeof(value));
-        if (!input || !normalizeWord(word) || !addWord(loaded, word, 0, value)) {
+        if (!input || !normalizeWord(word) || !addWord(loaded, word, value)) {
             throw std::runtime_error("Invalid dictionary file");
         }
     }
@@ -253,7 +270,7 @@ std::string trim(const std::string& text) {
 }
 
 int main() {
-    Node root;
+    std::shared_ptr<Node> root;
     std::string line;
     while (std::getline(std::cin, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -264,7 +281,8 @@ int main() {
         }
 
         try {
-            if (line[0] == '+') {
+            switch (line[0]) {
+            case '+': {
                 std::istringstream input(line.substr(1));
                 std::string word;
                 std::string number;
@@ -280,19 +298,23 @@ int main() {
                     std::cout << "ERROR: Invalid number\n";
                     continue;
                 }
-                if (addWord(root, word, 0, value)) {
+                if (addWord(root, word, value)) {
                     std::cout << "OK\n";
                 } else {
                     std::cout << "Exist\n";
                 }
-            } else if (line[0] == '-') {
+                break;
+            }
+            case '-': {
                 std::string word = trim(line.substr(1));
-                if (normalizeWord(word) && eraseWord(root, word, 0)) {
+                if (normalizeWord(word) && eraseWord(root, word)) {
                     std::cout << "OK\n";
                 } else {
                     std::cout << "NoSuchWord\n";
                 }
-            } else if (line[0] == '!') {
+                break;
+            }
+            case '!': {
                 std::istringstream input(line.substr(1));
                 std::string command;
                 std::string path;
@@ -311,13 +333,17 @@ int main() {
                     throw std::runtime_error("Unknown file command");
                 }
                 std::cout << "OK\n";
-            } else {
+                break;
+            }
+            default: {
                 std::uint64_t value;
-                if (normalizeWord(line) && findWord(root, line, 0, value)) {
+                if (normalizeWord(line) && findWord(root, line, value)) {
                     std::cout << "OK: " << value << '\n';
                 } else {
                     std::cout << "NoSuchWord\n";
                 }
+                break;
+            }
             }
         } catch (const std::exception& error) {
             std::cout << "ERROR: " << error.what() << '\n';
